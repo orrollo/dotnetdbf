@@ -18,11 +18,19 @@ using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Linq;
+
 namespace DotNetDBF
 {
     public class DBFReader : DBFBase, IDisposable
     {
-        private BinaryReader _dataInputStream;
+	    protected const string msgSourceIsNotOpen = "Source is not open";
+	    protected const string msgFailedToReadDbf = "Failed To Read DBF";
+		protected const string msgProblemReadingFile = "Problem Reading File";
+	    protected const string msgMemoLocationNotSet = "Memo Location Not Set";
+	    protected const string msgFailedToParseNumber = "Failed to parse Number";
+	    protected const string msgFailedToParseFloat = "Failed to parse Float";
+	    
+		private BinaryReader _dataInputStream;
         private DBFHeader _header;
         private string _dataMemoLoc;
 
@@ -41,8 +49,6 @@ namespace DotNetDBF
 		 
 		 @param InputStream where the data is read from.
 		 */
-
-
 
         public void SetSelectFields(params string[] aParams)
         {
@@ -93,7 +99,7 @@ namespace DotNetDBF
             }
             catch (IOException ex)
             {
-                throw new DBFException("Failed To Read DBF", ex);
+                throw new DBFException(msgFailedToReadDbf, ex);
             }
         }
 
@@ -107,7 +113,7 @@ namespace DotNetDBF
                 _header.Read(_dataInputStream);
 
                 /* it might be required to leap to the start of records at times */
-                int t_dataStartIndex = _header.HeaderLength
+                var t_dataStartIndex = _header.HeaderLength
                                        - (32 + (32 * _header.FieldArray.Length))
                                        - 1;
                 if (t_dataStartIndex > 0)
@@ -117,7 +123,7 @@ namespace DotNetDBF
             }
             catch (IOException e)
             {
-                throw new DBFException("Failed To Read DBF", e);
+                throw new DBFException(msgFailedToReadDbf, e);
             }
         }
 
@@ -155,32 +161,19 @@ namespace DotNetDBF
         #endregion
 
 
-        public string DataMemoLoc
+	    public string DataMemoLoc
+	    {
+		    get { return _dataMemoLoc; }
+		    set { _dataMemoLoc = value; }
+	    }
+
+	    public override String ToString()
         {
-            get
-            {
-                return _dataMemoLoc;
-            }set
-            {
-                _dataMemoLoc = value;
-            }
-        }
-
-        public override String ToString()
-        {
-            StringBuilder sb =
-                new StringBuilder(_header.Year + "/" + _header.Month + "/"
-                                  + _header.Day + "\n"
-                                  + "Total records: " + _header.NumberOfRecords +
-                                  "\nHeader length: " + _header.HeaderLength +
-                                  "");
-
-            for (int i = 0; i < _header.FieldArray.Length; i++)
-            {
-                sb.Append(_header.FieldArray[i].Name);
-                sb.Append("\n");
-            }
-
+			var sb = new StringBuilder();
+		    sb.AppendFormat("{0}/{1}/{2}\n", _header.Year, _header.Month, _header.Day);
+		    sb.AppendFormat("Total records: {0}\n", _header.NumberOfRecords);
+		    sb.AppendFormat("Header length: {0}\n", _header.HeaderLength);
+            foreach (DBFField field in _header.FieldArray) sb.AppendFormat("{0}\n", field.Name);
             return sb.ToString();
         }
 
@@ -203,212 +196,56 @@ namespace DotNetDBF
 
         internal Object[] NextRecord(IEnumerable<int> selectIndexes, IList<int> sortedIndexes)
         {
-            if (isClosed)
-            {
-                throw new DBFException("Source is not open");
-            }
-            IList<int> tOrderdSelectIndexes = sortedIndexes;
-
+	        if (isClosed) throw new DBFException(msgSourceIsNotOpen);
+	        
+			var tOrderedSelectIndexes = sortedIndexes;
             var recordObjects = new Object[_header.FieldArray.Length];
 
             try
             {
-                bool isDeleted = false;
-                do
-                {
-                    if (isDeleted)
-                    {
-                        _dataInputStream.ReadBytes(_header.RecordLength - 1);
-                    }
-
-                    int t_byte = _dataInputStream.ReadByte();
-                    if (t_byte == DBFFieldType.EndOfData)
-                    {
-                        return null;
-                    }
-
-                    isDeleted = (t_byte == '*');
-                } while (isDeleted);
+	            if (!SkipDeletedRecords()) return null;
 
                 int j = 0;
                 int k = -1;
-                for (int i = 0; i < _header.FieldArray.Length; i++)
+				int count = tOrderedSelectIndexes.Count;
+				
+				for (int i = 0; i < _header.FieldArray.Length; i++)
                 {
+	                var fieldLength = _header.FieldArray[i].FieldLength;
 
-                    if (tOrderdSelectIndexes.Count == j && j != 0
-                        || (tOrderdSelectIndexes.Count > j && tOrderdSelectIndexes[j] > i && tOrderdSelectIndexes[j] != k))
+	                bool noNeedInSelect = count == j && j != 0;
+	                bool skipField = noNeedInSelect || (count > j && tOrderedSelectIndexes[j] > i && tOrderedSelectIndexes[j] != k);
+	                if (skipField)
                     {
-                        _dataInputStream.BaseStream.Seek(_header.FieldArray[i].FieldLength, SeekOrigin.Current);
+                        _dataInputStream.BaseStream.Seek(fieldLength, SeekOrigin.Current);
                         continue;
                     }
-                    if (tOrderdSelectIndexes.Count > j)
-                        k = tOrderdSelectIndexes[j];
+                    if (count > j) k = tOrderedSelectIndexes[j];
                     j++;
-
                   
                     switch (_header.FieldArray[i].DataType)
                     {
                         case NativeDbType.Char:
-
-                            var b_array = new byte[
-                                _header.FieldArray[i].FieldLength
-                                ];
-                            _dataInputStream.Read(b_array, 0, b_array.Length);
-
-                            recordObjects[i] = CharEncoding.GetString(b_array).TrimEnd();
+                            var b_array = _dataInputStream.ReadBytes(fieldLength);
+		                    recordObjects[i] = CharEncoding.GetString(b_array).TrimEnd();
                             break;
-
                         case NativeDbType.Date:
-
-                            byte[] t_byte_year = new byte[4];
-                            _dataInputStream.Read(t_byte_year,
-                                                 0,
-                                                 t_byte_year.Length);
-
-                            byte[] t_byte_month = new byte[2];
-                            _dataInputStream.Read(t_byte_month,
-                                                 0,
-                                                 t_byte_month.Length);
-
-                            byte[] t_byte_day = new byte[2];
-                            _dataInputStream.Read(t_byte_day,
-                                                 0,
-                                                 t_byte_day.Length);
-
-                            try
-                            {
-                                var tYear = CharEncoding.GetString(t_byte_year);
-                                var tMonth = CharEncoding.GetString(t_byte_month);
-                                var tDay = CharEncoding.GetString(t_byte_day);
-
-                                int tIntYear, tIntMonth, tIntDay;
-                                if (Int32.TryParse(tYear, out tIntYear) &&
-                                    Int32.TryParse(tMonth, out tIntMonth) &&
-                                    Int32.TryParse(tDay, out tIntDay))
-                                {
-                                    recordObjects[i] = new DateTime(
-                                        tIntYear,
-                                        tIntMonth,
-                                        tIntDay);
-                                }
-                                else
-                                {
-                                    recordObjects[i] = null;
-                                }
-                            }
-                            catch (ArgumentOutOfRangeException)
-                            {
-                                /* this field may be empty or may have improper value set */
-                                recordObjects[i] = null;
-                            }
-
+		                    recordObjects[i] = ReadDateValue();
                             break;
-
                         case NativeDbType.Float:
-
-                            try
-                            {
-                                byte[] t_float = new byte[
-                                    _header.FieldArray[i].FieldLength
-                                    ];
-                                _dataInputStream.Read(t_float, 0, t_float.Length);
-                                String tParsed = CharEncoding.GetString(t_float);
-                                var tLast = tParsed.Substring(tParsed.Length - 1);
-                                if (tParsed.Length > 0
-                                    && tLast != " "
-                                    && tLast != DBFFieldType.Unknown)
-                                {
-                                    recordObjects[i] = Double.Parse(tParsed, NumberStyles.Float | NumberStyles.AllowLeadingWhite);
-                                }
-                                else
-                                {
-                                    recordObjects[i] = null;
-                                }
-                            }
-                            catch (FormatException e)
-                            {
-                                throw new DBFException("Failed to parse Float",
-                                                       e);
-                            }
-
+		                    recordObjects[i] = ReadFloatValue(fieldLength);
                             break;
-
                         case NativeDbType.Numeric:
-
-                            try
-                            {
-                                byte[] t_numeric = new byte[
-                                    _header.FieldArray[i].FieldLength
-                                    ];
-                                _dataInputStream.Read(t_numeric,
-                                                     0,
-                                                     t_numeric.Length);
-                                string tParsed =
-                                    CharEncoding.GetString(t_numeric);
-                                var tLast = tParsed.Substring(tParsed.Length - 1);
-                                if (tParsed.Length > 0
-                                    && tLast != " "
-                                    && tLast != DBFFieldType.Unknown)
-                                {
-                                    recordObjects[i] = Decimal.Parse(tParsed, NumberStyles.Float | NumberStyles.AllowLeadingWhite);
-                                }
-                                else
-                                {
-                                    recordObjects[i] = null;
-                                }
-                            }
-                            catch (FormatException e)
-                            {
-                                throw new DBFException(
-                                    "Failed to parse Number", e);
-                            }
-
+		                    recordObjects[i] = ReadNumericValue(fieldLength);
                             break;
-
                         case NativeDbType.Logical:
-
-                            byte t_logical = _dataInputStream.ReadByte();
-                            //todo find out whats really valid
-                            if (t_logical == 'Y' || t_logical == 't'
-                                || t_logical == 'T'
-                                || t_logical == 't')
-                            {
-                                recordObjects[i] = true;
-                            }
-                            else if (t_logical == DBFFieldType.UnknownByte)
-                            {
-                                recordObjects[i] = DBNull.Value;
-                            }else
-                            {
-                                recordObjects[i] = false;
-                            }
+		                    recordObjects[i] = ReadLogicValue();
                             break;
-
                         case NativeDbType.Memo:
-                            if(string.IsNullOrEmpty(_dataMemoLoc))
-                                throw new Exception("Memo Location Not Set");
-
-
-                            var tRawMemoPointer = _dataInputStream.ReadBytes(_header.FieldArray[i].FieldLength);
-                            var tMemoPoiner = CharEncoding.GetString(tRawMemoPointer);
-                            if(string.IsNullOrEmpty(tMemoPoiner))
-                            {
-                                recordObjects[i] = DBNull.Value;
-                                break;
-                            }
-                            long tBlock;
-                            if(!long.TryParse(tMemoPoiner, out tBlock))
-                            {  //Because Memo files can vary and are often the least importat data, 
-                                //we will return null when it doesn't match our format.
-                                recordObjects[i] = DBNull.Value;
-                                break;
-                            }
-
-
-                            recordObjects[i] = new MemoValue(tBlock, this, _dataMemoLoc);
+		                    recordObjects[i] = ReadMemoValue(fieldLength);
                             break;
                         default:
-                            _dataInputStream.ReadBytes(_header.FieldArray[i].FieldLength);
+                            _dataInputStream.ReadBytes(fieldLength);
                             recordObjects[i] = DBNull.Value;
                             break;
                     }
@@ -422,10 +259,127 @@ namespace DotNetDBF
             }
             catch (IOException e)
             {
-                throw new DBFException("Problem Reading File", e);
+                throw new DBFException(msgProblemReadingFile, e);
             }
 
             return selectIndexes.Any() ? selectIndexes.Select(it => recordObjects[it]).ToArray() : recordObjects;
         }
+
+	    protected bool SkipDeletedRecords()
+	    {
+		    var isDeleted = false;
+		    do
+		    {
+			    if (isDeleted) _dataInputStream.ReadBytes(_header.RecordLength - 1);
+			    var t_byte = _dataInputStream.ReadByte();
+			    if (t_byte == DBFFieldType.EndOfData) return false;
+				isDeleted = t_byte == '*';
+		    } while (isDeleted);
+		    return true;
+	    }
+
+	    private object ReadMemoValue(int fieldLength)
+	    {
+		    if (string.IsNullOrEmpty(_dataMemoLoc))
+			    throw new Exception(msgMemoLocationNotSet);
+		    var tRawMemoPointer = _dataInputStream.ReadBytes(fieldLength);
+		    var tMemoPoiner = CharEncoding.GetString(tRawMemoPointer);
+		    //Because Memo files can vary and are often the least importat data, 
+		    //we will return null when it doesn't match our format.
+		    if (!string.IsNullOrEmpty(tMemoPoiner))
+		    {
+			    long tBlock;
+			    if (long.TryParse(tMemoPoiner, out tBlock))
+				    return new MemoValue(tBlock, this, _dataMemoLoc);
+		    }
+		    return DBNull.Value;
+	    }
+
+	    private object ReadLogicValue()
+	    {
+		    var data = _dataInputStream.ReadByte();
+		    //todo find out whats really valid
+		    if (data == DBFFieldType.UnknownByte) return DBNull.Value;
+		    return data == 'Y' || data == 'y' || data == 'T' || data == 't';
+	    }
+
+	    private object ReadNumericValue(int fieldLength)
+	    {
+		    try
+		    {
+			    var tParsed = GetBytesAsString(fieldLength);
+			    if (IsGoodString(tParsed))
+			    {
+				    return Decimal.Parse(tParsed.Replace(',', '.'),
+				                          NumberStyles.Float | NumberStyles.AllowLeadingWhite,
+				                          CultureInfo.InvariantCulture);
+			    }
+		    }
+		    catch (FormatException e)
+		    {
+			    throw new DBFException(msgFailedToParseNumber, e);
+		    }
+		    return null;
+	    }
+
+	    private static bool IsGoodString(string tParsed)
+	    {
+		    var tLast = tParsed.Substring(tParsed.Length - 1);
+		    bool isGoodString = tParsed.Length > 0 && tLast != " " && tLast != DBFFieldType.Unknown;
+		    return isGoodString;
+	    }
+
+	    private string GetBytesAsString(int fieldLength)
+	    {
+		    var data = _dataInputStream.ReadBytes(fieldLength);
+		    var tParsed = CharEncoding.GetString(data);
+		    return tParsed;
+	    }
+
+	    private object ReadFloatValue(int fieldLength)
+	    {
+		    try
+		    {
+				var tParsed = GetBytesAsString(fieldLength);
+				if (IsGoodString(tParsed))
+				{
+					return Double.Parse(tParsed.Replace(',', '.'),
+					                     NumberStyles.Float | NumberStyles.AllowLeadingWhite,
+					                     CultureInfo.InvariantCulture);
+				}
+		    }
+		    catch (FormatException e)
+		    {
+			    throw new DBFException(msgFailedToParseFloat, e);
+		    }
+		    return null;
+	    }
+
+	    private object ReadDateValue()
+	    {
+		    var bytesYear = _dataInputStream.ReadBytes(4);
+		    var bytesMonth = _dataInputStream.ReadBytes(2);
+		    var bytesDay = _dataInputStream.ReadBytes(2);
+
+		    try
+		    {
+			    var tYear = CharEncoding.GetString(bytesYear);
+			    var tMonth = CharEncoding.GetString(bytesMonth);
+			    var tDay = CharEncoding.GetString(bytesDay);
+
+			    int tIntYear, tIntMonth, tIntDay;
+			    if (Int32.TryParse(tYear, out tIntYear) &&
+			        Int32.TryParse(tMonth, out tIntMonth) &&
+			        Int32.TryParse(tDay, out tIntDay))
+			    {
+				    return new DateTime(tIntYear, tIntMonth, tIntDay);
+			    }
+		    }
+		    catch (ArgumentOutOfRangeException)
+		    {
+			    /* this field may be empty or may have improper value set */
+		    }
+		    return null;
+	    }
     }
 }
