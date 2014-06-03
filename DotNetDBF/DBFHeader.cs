@@ -17,6 +17,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 
 namespace DotNetDBF
 {
@@ -103,24 +104,18 @@ namespace DotNetDBF
         {
             get
             {
-                int tRecordLength = 0;
-                for (int i = 0; i < _fieldArray.Length; i++)
-                {
-                    tRecordLength += _fieldArray[i].FieldLength;
-                }
-
-                return (short)(tRecordLength + 1);
+	            return (short)(_fieldArray.Sum(t => t.FieldLength) + 1);
             }
         }
 
-        internal short HeaderLength
-        {
-            set { _headerLength = value; }
+	    internal short HeaderLength
+	    {
+		    set { _headerLength = value; }
 
-            get { return _headerLength; }
-        }
+		    get { return _headerLength; }
+	    }
 
-        internal DBFField[] FieldArray
+	    internal DBFField[] FieldArray
         {
             set { _fieldArray = value; }
 
@@ -190,16 +185,16 @@ namespace DotNetDBF
             reserv4 = dataInput.ReadInt16(); /* 30-31 */
 
 
-            List<DBFField> v_fields = new List<DBFField>();
+            var vFields = new List<DBFField>();
 
-            DBFField field = DBFField.CreateField(dataInput); /* 32 each */
+            var field = DBFField.CreateField(dataInput); /* 32 each */
             while (field != null)
             {
-                v_fields.Add(field);
+                vFields.Add(field);
                 field = DBFField.CreateField(dataInput);
             }
 
-            _fieldArray = v_fields.ToArray();
+            _fieldArray = vFields.ToArray();
             //System.out.println( "Number of fields: " + _fieldArray.length);
         }
 
